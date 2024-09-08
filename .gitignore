@@ -1,0 +1,10 @@
+results*
+output*
+indicator_data
+extra*
+.venv
+data
+branches.txt
+RSI
+.DS_Store
+*.cpython*
