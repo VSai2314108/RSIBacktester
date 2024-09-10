@@ -87,7 +87,12 @@ def update_data(etfs: list[str], data_folder: str):
 
 
 if __name__ == "__main__":
-    with open('tickers.txt', 'r') as file:
-        tickers = [line.strip() for line in file]
-        print(tickers)
+    tickers = []
+    with open('tickers-ind.txt', 'r') as file:
+        tickers.extend([line.strip() for line in file])
+        
+    with open('tickers-trade.txt', 'r') as file:
+        tickers.extend([line.strip() for line in file])
+        
+    print(tickers)
     update_data(tickers, "./data")
