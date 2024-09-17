@@ -1,0 +1,23 @@
+{
+    "exclude": [
+        "data",
+        "extra",
+        "indicator_data",
+        "output_data",
+        "output_data_spark",
+        "results",
+        "results-deephaven",
+        "results-pandas",
+        "results-pandas-v2",
+        "results-spark",
+        "RSI",
+        "**/.ipynb_checkpoints",
+        "**/__pycache__",
+        "**/node_modules",
+        "**/venv",
+        "**/dist",
+        "**/build",
+        "**/tmp",
+        "**/temp"
+    ]
+}
