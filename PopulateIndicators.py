@@ -37,7 +37,7 @@ def main():
             file_path = os.path.join(data_dir, file)
             df = process_file(file_path)
             
-            output_file = os.path.join(output_dir, f"{ticker}.csv")
+            output_file = os.path.join(output_dir, f"{ticker.upper()}.csv")
             df.to_csv(output_file)
             print(f"Saved {output_file}")
 

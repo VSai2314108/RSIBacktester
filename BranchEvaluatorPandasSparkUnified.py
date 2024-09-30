@@ -46,13 +46,12 @@ def evaluate_branch(branch):
     
     return result[['condition_met', 'trade_returns_day']].to_dict(orient='index')
 
-# Update the save_as_parquet function to handle the new column
-def save_as_parquet(data, branch, output_dir):
+def append_to_parquet(data, branch, output_file):
     df = pd.DataFrame.from_dict(data, orient='index').reset_index()
     df.columns = ['date', 'condition_met', 'trade_returns_day']
     df['date'] = pd.to_datetime(df['date'])
     
-    # Add year and month columns for partitioning
+    # Add year and month columns
     df['year'] = df['date'].dt.year
     df['month'] = df['date'].dt.month
     
@@ -60,21 +59,26 @@ def save_as_parquet(data, branch, output_dir):
     df['branch'] = branch
     
     # Convert pandas DataFrame to PyArrow Table
-    output_table = pa.Table.from_pandas(df)
+    new_table = pa.Table.from_pandas(df)
     
-    # Create partitions based on year and month, overwriting existing data
-    pq.write_to_dataset(
-        output_table,
-        root_path=output_dir,
-        partition_cols=['year', 'month', 'branch'],
-        existing_data_behavior='delete_matching'
-    )
+    if os.path.exists(output_file):
+        # If the file exists, read its schema
+        existing_schema = pq.read_schema(output_file)
+        # Ensure the new table matches the existing schema
+        new_table = new_table.cast(existing_schema)
+        
+        # Open the existing file in append mode
+        with pq.ParquetWriter(output_file, existing_schema, append=True) as writer:
+            writer.write_table(new_table)
+    else:
+        # If the file doesn't exist, create it
+        pq.write_table(new_table, output_file)
 
-def process_branch(branch):
+def process_branch(args):
+    branch, output_file = args
     try:
         result = evaluate_branch(branch)
-        output_dir = './output_data_spark'
-        save_as_parquet(result, branch, output_dir)
+        append_to_parquet(result, branch, output_file)
         return None
     except Exception as e:
         return f"Error processing branch {branch}: {str(e)}"
@@ -83,8 +87,8 @@ def main():
     with open('branches.txt', 'r') as f:
         branches = f.read().splitlines()
     
-    output_dir = './output_data_spark'
-    os.makedirs(output_dir, exist_ok=True)
+    output_file = './output_data_spark/unified_output.parquet'
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
     # Determine the number of CPU cores to use
     num_cores = mp.cpu_count() - 4  # Leave one core free
@@ -93,7 +97,7 @@ def main():
     with mp.Pool(num_cores) as pool:
         # Use tqdm to show progress
         results = list(tqdm(
-            pool.imap_unordered(process_branch, branches),
+            pool.imap_unordered(process_branch, [(branch, output_file) for branch in branches]),
             total=len(branches),
             desc="Processing branches",
             unit="branch"

@@ -3,10 +3,11 @@ from deephaven_server import Server
 server = Server(
     port=10001,
     jvm_args=[
-        "-Xmx4g",
+        "-Xmx12g",
         "-DAuthHandlers=io.deephaven.auth.AnonymousAuthenticationHandler",
     ],
 )
+
 server.start()
 
 from deephaven import parquet
@@ -57,6 +58,8 @@ def read_parquet_files(input_path: str, start_date: str, end_date: str) -> Table
             if table is not None and table.size > 0:
                 # Use merge to combine the tables
                 tables.append(table)
+        else: 
+            return None # we want to evaluate only if the full date range is present
 
 
     combined_table = None
@@ -154,10 +157,10 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
 
 def main():
     # Parameters
-    look_back_window = 90
-    branch_count = 100
-    min_return = 10
-    look_forward_window = 30
+    look_back_window = 1080
+    branch_count = 5000
+    min_return = 5
+    look_forward_window = 1080
     input_path = "output_data_spark"
     
     start_date = pd.to_datetime("2006-02-01")
