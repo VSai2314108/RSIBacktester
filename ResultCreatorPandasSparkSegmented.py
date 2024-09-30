@@ -52,7 +52,7 @@ def get_months_between(start_date, end_date):
 def read_branches_data(branches: List[str], start_date, end_date, input_path: str) -> Table:
     months = get_months_between(start_date, end_date)
     tables = []
-    for year, month in months:
+    for year, month in tqdm(months, desc="Processing months", unit="month"):
         # print(f"Year: {year}, Month: {month}")
         # with Pool(processes=cpu_count()-1) as pool:
         #     args_list = [(branch, year, month, input_path) for branch in branches]
@@ -60,7 +60,7 @@ def read_branches_data(branches: List[str], start_date, end_date, input_path: st
             
         # tables.extend([table for branch_tables in results for table in branch_tables])
         
-        for branch in tqdm(branches, desc="Processing branches", leave=False):
+        for branch in branches:
             path = os.path.join(input_path, f"year={year}", f"month={month}", f"branch={branch}")
             if os.path.exists(path):
                 files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.parquet')]
@@ -69,7 +69,7 @@ def read_branches_data(branches: List[str], start_date, end_date, input_path: st
                     table = parquet.read(file)
                     if table is not None and table.size > 0:
                         table = table.lazy_update(formulas=[f"branch=`{branch}`"])
-                tables.append(table)
+                        tables.append(table)
     if tables:
         combined_table = merge(tables)
         # Filter data by date range
@@ -131,9 +131,11 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
     
     back_months = get_months_between(back_start_date, back_end_date)
     back_branches = set()
+    
+    print(f"Got months")
 
     # Collect all branches in the back period
-    for year, month in back_months:
+    for year, month in [back_months[-1]]:
         path = f"{input_path}/year={year}/month={month}"
         if os.path.exists(path):
             # List branch directories
@@ -142,6 +144,8 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
     
     back_branches = list(back_branches)
     
+    print(f"Got back branches")
+    
     if not back_branches:
         print(f"No branches found for back period ending {back_end_date.strftime('%Y-%m')}")
         return None
@@ -149,7 +153,7 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
     branch_metrics_list = []
     
     # Process branches in batches
-    for i in range(0, len(back_branches), batch_size):
+    for i in tqdm(range(0, len(back_branches), batch_size), desc="Processing back period batches"):
         batch_branches = back_branches[i:i+batch_size]
         print(f"Processing back period batch {i//batch_size + 1}: branches {i+1} to {i+len(batch_branches)}")
         back_data = read_branches_data(batch_branches, back_start_date, back_end_date, input_path)
@@ -162,12 +166,15 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
         print(f"No data found for back period ending {back_end_date.strftime('%Y-%m')}")
         return None
     
+    print(f"Merging metrics")
     # Merge metrics for all batches
     branch_metrics_table = merge(branch_metrics_list)
     
     # Select top branches
     top_branches = select_top_branches(branch_metrics_table, branch_count, min_return)
     top_branches_list = top_branches.to_pandas()['branch'].tolist()
+    
+    print(f"Selecting top branches")
     
     forward_metrics_list = []
     
@@ -180,9 +187,14 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
             forward_metrics = calculate_metrics(forward_data)
             forward_metrics_list.append(forward_metrics)
     
+    print(f"Got forward metrics")
+    
+    
     if not forward_metrics_list:
         print(f"No forward data found for date {current_date.strftime('%Y-%m')}")
         return None
+    
+    print(f"Merging forward metrics")
     
     forward_metrics_table = merge(forward_metrics_list)
     
@@ -201,6 +213,8 @@ def process_date_range(current_date, look_back_window, branch_count, min_return,
         ]
     )
     
+    print(f"Aggregated metrics")
+    
     # Save results
     parquet.write(aggregated_metrics, f"results-deephaven/metrics_{forward_end_date.strftime('%Y_%m')}.parquet")
     
@@ -213,14 +227,21 @@ def main():
     min_return = 5
     look_forward_window = 1080
     input_path = "output_data_spark"
-    batch_size = 1000  # Set your desired batch size here
+    batch_size = 100  # Set your desired batch size here
     
     start_date = pd.to_datetime("2006-02-01")
     end_date = pd.to_datetime("2023-12-31")
     date_range = pd.date_range(start=start_date, end=end_date, freq='MS')
     
+    # create a temporary date range and lookback and lookforward window that sets the end date for the lookback period to 2019-01-01 and the start date for the lookforward period to 20219-01-02
+    single_date = pd.to_datetime("2019-01-01")
+    date_range = pd.date_range(start=single_date, periods=1, freq='MS')
+
+    look_back_window = 3650
+    look_forward_window = 3650
+    
     results = []
-    for date in tqdm(date_range, desc="Processing dates"):
+    for date in date_range:
         result = process_date_range(date, look_back_window, branch_count, min_return, look_forward_window, input_path, batch_size)
         if result is not None:
             results.append(result)

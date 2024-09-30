@@ -1,113 +1,85 @@
 import os
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, year, month, when
 from tqdm import tqdm
-import multiprocessing as mp
 
-# Remove unused imports
-# from datetime import datetime, timedelta
+def create_spark_session():
+    return SparkSession.builder \
+        .appName("ParquetWriter") \
+        .getOrCreate()
 
-def load_data(ticker):
+def load_data(spark, ticker):
     file_path = f'./indicator_data/{ticker}.csv'
-    df = pd.read_csv(file_path, index_col='date', parse_dates=True)
+    df = spark.read.csv(file_path, header=True, inferSchema=True, timestampFormat="yyyy-MM-dd")
+    df = df.withColumnRenamed('date', 'date')
     return df
 
 def evaluate_condition(df, indicator, direction, value, days):
-    indicator_values = df[indicator]
-    
     if direction == '>':
-        condition = indicator_values > value
+        condition = df[indicator] > value
     else:
-        condition = indicator_values < value
-    
-    # Change the rolling operation
-    return condition.rolling(window=days).min() == 1
+        condition = df[indicator] < value
 
-def evaluate_branch(branch):
+    # Spark doesn't have a direct rolling function like pandas, so we implement a window-based approach
+    from pyspark.sql.window import Window
+    from pyspark.sql.functions import min as spark_min
+
+    window_spec = Window.orderBy("date").rowsBetween(-days + 1, 0)
+    rolling_condition = spark_min(when(condition, 1).otherwise(0)).over(window_spec)
+
+    return rolling_condition
+
+def evaluate_branch(branch, spark):
     parts = branch.split('-')
     indicator, period, indicator_ticker, direction, threshold, days, trading_ticker = parts
-    
-    indicator_df = load_data(indicator_ticker)
-    trading_df = load_data(trading_ticker)
-    
-    common_dates = indicator_df.index.intersection(trading_df.index)
-    indicator_df = indicator_df.loc[common_dates]
-    trading_df = trading_df.loc[common_dates]
-    
-    condition_met = evaluate_condition(indicator_df, f"{indicator}_{period}", direction, float(threshold), int(days))
-    
-    result = pd.DataFrame(index=trading_df.index)
-    result['condition_met'] = condition_met.astype(int)
-    
-    # Shift condition_met forward by one day and calculate trade returns
-    result['shifted_condition'] = result['condition_met'].shift(1)
-    result['trade_returns_day'] = (result['shifted_condition'] * trading_df['close'].pct_change()) + 1
-    
-    return result[['condition_met', 'trade_returns_day']].to_dict(orient='index')
 
-def append_to_parquet(data, branch, output_file):
-    df = pd.DataFrame.from_dict(data, orient='index').reset_index()
-    df.columns = ['date', 'condition_met', 'trade_returns_day']
-    df['date'] = pd.to_datetime(df['date'])
-    
-    # Add year and month columns
-    df['year'] = df['date'].dt.year
-    df['month'] = df['date'].dt.month
-    
-    # Add branch column
-    df['branch'] = branch
-    
-    # Convert pandas DataFrame to PyArrow Table
-    new_table = pa.Table.from_pandas(df)
-    
-    if os.path.exists(output_file):
-        # If the file exists, read its schema
-        existing_schema = pq.read_schema(output_file)
-        # Ensure the new table matches the existing schema
-        new_table = new_table.cast(existing_schema)
-        
-        # Open the existing file in append mode
-        with pq.ParquetWriter(output_file, existing_schema, append=True) as writer:
-            writer.write_table(new_table)
-    else:
-        # If the file doesn't exist, create it
-        pq.write_table(new_table, output_file)
+    # Load data for indicator and trading
+    indicator_df = load_data(spark, indicator_ticker)
+    trading_df = load_data(spark, trading_ticker)
 
-def process_branch(args):
-    branch, output_file = args
+    # Inner join on date
+    common_df = indicator_df.join(trading_df, on="date", how="inner")
+
+    # Evaluate the condition
+    condition_met = evaluate_condition(common_df, f"{indicator}_{period}", direction, float(threshold), int(days))
+
+    # Create new columns for the condition and returns
+    common_df = common_df.withColumn("condition_met", condition_met)
+    common_df = common_df.withColumn("shifted_condition", col("condition_met").shift(1))
+    common_df = common_df.withColumn("trade_returns_day", when(col("shifted_condition") == 1, col("close").pct_change() + 1).otherwise(1))
+
+    return common_df
+
+def save_as_parquet(df, branch, output_dir):
+    # Add year, month, and branch columns for partitioning
+    df = df.withColumn('year', year(col('date')))
+    df = df.withColumn('month', month(col('date')))
+    df = df.withColumn('branch', lit(branch))
+
+    # Write partitioned Parquet data
+    df.write.partitionBy("year", "month", "branch").mode("append").parquet(output_dir)
+
+def process_branch(branch, spark, output_dir):
     try:
-        result = evaluate_branch(branch)
-        append_to_parquet(result, branch, output_file)
-        return None
+        result_df = evaluate_branch(branch, spark)
+        save_as_parquet(result_df, branch, output_dir)
     except Exception as e:
         return f"Error processing branch {branch}: {str(e)}"
 
 def main():
+    # Create a Spark session
+    spark = create_spark_session()
+
     with open('branches.txt', 'r') as f:
         branches = f.read().splitlines()
-    
-    output_file = './output_data_spark/unified_output.parquet'
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
-    # Determine the number of CPU cores to use
-    num_cores = mp.cpu_count() - 4  # Leave one core free
-    
-    # Create a pool of worker processes
-    with mp.Pool(num_cores) as pool:
-        # Use tqdm to show progress
-        results = list(tqdm(
-            pool.imap_unordered(process_branch, [(branch, output_file) for branch in branches]),
-            total=len(branches),
-            desc="Processing branches",
-            unit="branch"
-        ))
-    
-    # Print any errors that occurred during processing
-    errors = [error for error in results if error is not None]
-    for error in errors:
-        print(error)
-    
+
+    output_dir = './output_data_spark'
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process branches in parallel using Spark's distributed processing
+    for branch in tqdm(branches, desc="Processing branches", unit="branch"):
+        process_branch(branch, spark, output_dir)
+
     print("Branch evaluation completed.")
 
 if __name__ == "__main__":
