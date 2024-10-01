@@ -8,3 +8,4 @@ branches.txt
 RSI
 .DS_Store
 *.cpython*
+*.parquet

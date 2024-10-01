@@ -29,17 +29,18 @@ def main():
     data_dir = './data'
     os.makedirs(output_dir, exist_ok=True)
     
-    for file in os.listdir(data_dir):
-        if file.endswith('.csv') and file != 'last_updated.csv':
-            ticker = os.path.splitext(file)[0]
-            print(f"Processing {ticker}")
+    # read the tickers from the tickers-ind.txt
+    with open('./tickers-ind.txt', 'r') as file:
+        tickers = [line.strip() for line in file]
+    
+    for ticker in tickers:
+        print(f"Processing {ticker}")
+        file_path = os.path.join(data_dir, f"{ticker}.csv")
+        df = process_file(file_path)
             
-            file_path = os.path.join(data_dir, file)
-            df = process_file(file_path)
-            
-            output_file = os.path.join(output_dir, f"{ticker.upper()}.csv")
-            df.to_csv(output_file)
-            print(f"Saved {output_file}")
+        output_file = os.path.join(output_dir, f"{ticker.upper()}.csv")
+        df.to_csv(output_file)
+        print(f"Saved {output_file}")
 
 if __name__ == "__main__":
     main()
