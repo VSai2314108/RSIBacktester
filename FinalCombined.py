@@ -3,6 +3,8 @@ from tqdm import tqdm
 import os
 import multiprocessing
 from functools import partial
+from typing import Union
+import numpy as np
 
 
 def load_data(ticker: str) -> pd.DataFrame:
@@ -77,9 +79,12 @@ def gather_monthly_returns(directory: str) -> pd.DataFrame:
         monthly_returns_df = pd.concat([monthly_returns_df, pd.read_parquet(os.path.join(directory, file))], axis=1)
     return monthly_returns_df
 
-def one_back_one_forward(monthly_returns_df: pd.DataFrame, back_start: str | pd.Timestamp, 
-                         back_end: str | pd.Timestamp, forward_start: str | pd.Timestamp, 
-                         forward_end: str | pd.Timestamp, top_n: int) -> pd.DataFrame:
+def one_back_one_forward(monthly_returns_df: pd.DataFrame, 
+                         back_start: Union[str, pd.Timestamp], 
+                         back_end: Union[str, pd.Timestamp], 
+                         forward_start: Union[str, pd.Timestamp], 
+                         forward_end: Union[str, pd.Timestamp], 
+                         top_n: int) -> pd.DataFrame:
     # Convert string dates to datetime if necessary
     if isinstance(back_start, str):
         back_start = pd.to_datetime(back_start)
@@ -116,35 +121,37 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame, back_start: str | pd.
     dataset.loc['portion_of_year'] = [(back_end - back_start).days / 365, (forward_end - forward_start).days / 365]
     
     # Calculate CAGR
-    dataset.loc['cagr'] = ((dataset.mean() - 1) * 100) / dataset.loc['portion_of_year']
+    dataset.loc['cagr'] = dataset.loc['avg'] / dataset.loc['portion_of_year']
     
     print(dataset)
     
     return dataset
 
 if __name__ == "__main__":
-    os.makedirs('./monthly_returns', exist_ok=True)
+    # os.makedirs('./monthly_returns', exist_ok=True)
     
-    branches: list[str] = []
-    with open('branches.txt', 'r') as file:
-        branches = [line.strip() for line in file]
+    # branches: list[str] = []
+    # with open('branches.txt', 'r') as file:
+    #     branches = [line.strip() for line in file]
         
-    batch_size: int = 100
-    for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
-        batch: list[str] = branches[i:i+batch_size]
-        monthly_returns_df: pd.DataFrame = batch_processor(batch)
-        monthly_returns_df.to_parquet(f'./monthly_returns/monthly_returns_{i//batch_size}.parquet')
+    # batch_size: int = 100
+    # for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
+    #     batch: list[str] = branches[i:i+batch_size]
+    #     monthly_returns_df: pd.DataFrame = batch_processor(batch)
+    #     monthly_returns_df.to_parquet(f'./monthly_returns/monthly_returns_{i//batch_size}.parquet')
         
     monthly_returns_df: pd.DataFrame = gather_monthly_returns('./monthly_returns')
     monthly_returns_df.index = pd.to_datetime(monthly_returns_df.index)
-
+    
+    # replace all nans and infs with 1
+    monthly_returns_df.replace([np.inf, -np.inf], 1, inplace=True)
     back_start: str = "2010-02"
-    back_end: str = "2010-12"
-    forward_start: str = "2011-01"
-    forward_end: str = "2011-03"
-    top_n: int = 100
+    back_end: str = "2018-12"
+    forward_start: str = "2019-01"
+    forward_end: str = "2024-06"
+    top_n: int = 5000
 
     dataset: pd.DataFrame = one_back_one_forward(monthly_returns_df, back_start, back_end, forward_start, forward_end, top_n)
 
     # save the dataset to a csv file
-    dataset.to_csv('./dataset.csv')
+    dataset.to_csv(f'./dataset_{back_start}_{back_end}_{forward_start}_{forward_end}_{top_n}_2.csv')

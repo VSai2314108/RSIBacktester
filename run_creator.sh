@@ -7,7 +7,7 @@ source .venv/bin/activate
 TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 
 # Run the Python script using nohup and capture the PID
-nohup python -u ResultCreatorPandasSparkSegmented.py > output.log 2>&1 & PID=$!
+nohup python -u FinalCombined.py > output.log 2>&1 & PID=$!
 
 # Log the PID and timestamp
 echo "$TIMESTAMP - Process started with PID $PID" >> process.log
