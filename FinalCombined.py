@@ -44,9 +44,31 @@ def evaluate_branch(branch: str) -> pd.DataFrame:
     return result[['trade_returns_day']]
 
 def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
-    df['year'] = df.index.year
-    df['month'] = df.index.month
-    monthly_returns: pd.Series = df.groupby(['year', 'month'])['trade_returns_day'].prod()
+    def cagr(series: pd.Series) -> float:
+        return series.prod() ** (365 / len(series.index)) - 1
+    
+    def days_in_market_ratio(series: pd.Series) -> float:
+        return (series != 1).sum() / len(series)
+    
+    def calmar(series: pd.Series) -> float:
+        cagr = (series.prod() ** (365 / len(series.index)) - 1)
+        max_drawdown = max([1 - min(series.cumprod()), 0.000001])
+        return cagr / max_drawdown if max_drawdown != 0 else 0
+    
+    monthly_returns = df.groupby(['year', 'month']).agg({
+        branch: [
+            ('cagr', cagr),
+            ('days_in_market', days_in_market_ratio),
+            ('calmar', calmar)
+        ]
+    })
+    
+    monthly_returns.columns = monthly_returns.columns.droplevel(0)
+    return monthly_returns
+        
+
+    
+    # days_in_market_ratio is the number of days where trade_returns_day != 1 over total days in the month
     
     monthly_returns = monthly_returns.reset_index()
     monthly_returns['month-year'] = monthly_returns['year'].astype(str) + '-' + monthly_returns['month'].astype(str).str.zfill(2)
