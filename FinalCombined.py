@@ -50,7 +50,9 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
     def cagr(series: pd.Series) -> float:
         if len(series) == 0:
             return 0
-        return series.prod() ** (365 / len(series)) - 1
+        percent_return = (series.prod() - 1) # as decimal
+        cagr = (((1+percent_return) ** (365 / len(series))) - 1) * 100 # as percent
+        return cagr
     
     def days_in_market_ratio(series: pd.Series) -> float:
         if len(series) == 0:
@@ -60,8 +62,10 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
     def calmar(series: pd.Series) -> float:
         if len(series) == 0:
             return 0
-        cagr_val = series.prod() ** (365 / len(series)) - 1
-        max_drawdown = max([1 - min(series.cumprod()), 0.000001])
+        
+        percent_return = (series.prod() - 1) # as decimal
+        cagr_val = (percent_return ** (365 / len(series))) - 1
+        max_drawdown = max([1 - min(series.cumprod()), 0.000001])        
         return cagr_val / max_drawdown if max_drawdown != 0 else 0
     
     def tuple_data(series: pd.Series) -> tuple[float, float, float]:
@@ -71,8 +75,8 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
     df['month'] = df.index.month
     
     # Clean the series once
-    df['trade_returns_day'] = clean_series(df['trade_returns_day'])
-    
+    # df['trade_returns_day'] = clean_series(df['trade_returns_day'])
+        
     monthly_returns = df.groupby(['year', 'month'])['trade_returns_day'].agg(tuple_data)
     
     monthly_returns = monthly_returns.reset_index()
@@ -101,11 +105,21 @@ def batch_processor(branches: list[str]) -> pd.DataFrame:
     return pd.concat(monthly_returns_dfs, axis=1)
 
 def gather_monthly_returns(directory: str) -> pd.DataFrame:
-    monthly_returns_df: pd.DataFrame = pd.DataFrame()
-    files: list[str] = [f for f in os.listdir(directory) if f.endswith('.parquet')]
+    dataframes = []
+    files = [f for f in os.listdir(directory) if f.endswith('.parquet')][:100]
     for file in tqdm(files, desc="Processing files", unit="file"):
-        monthly_returns_df = pd.concat([monthly_returns_df, pd.read_parquet(os.path.join(directory, file))], axis=1)
+        df = pd.read_parquet(os.path.join(directory, file))
+        dataframes.append(df)
+    monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')  # Use join='inner' to keep only common indices
+    
+    # print the data for this column specifically - rsi-3-SPXL->-23-1-ERY
+    print(monthly_returns_df['rsi-3-SPXL->-23-1-ERY'])
+    
+    # write it to a temp file
+    monthly_returns_df['rsi-3-SPXL->-23-1-ERY'].to_csv(f'./temp/tmp.csv')
+    
     return monthly_returns_df
+
 
 def one_back_one_forward(monthly_returns_df: pd.DataFrame, 
                          back_start: Union[str, pd.Timestamp], 
@@ -135,18 +149,22 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
         'calmar': np.mean([x[2] for x in col])
     }))
     
+    # make the columns the keys and the values the series by transposing the dataframe
+    back_period_metrics = back_period_metrics.T
+    
+    # print(back_period_metrics.head())
+    
     # Filter branches based on minimum CAGR and days in market ratio
     filtered_branches = back_period_metrics[
         (back_period_metrics['cagr'] >= min_cagr) & 
         (back_period_metrics['days_in_market'] >= min_days_in_market)
     ]
     
-    # Select top N branches by highest Calmar ratio
-    top_n_branches = filtered_branches.nlargest(top_n, 'calmar')
-    print(top_n_branches)
+    branches_to_check: list[str] = filtered_branches.nlargest(top_n, 'calmar').index.tolist()
+    # print(branches_to_check)
     
-    branches_to_check: list[str] = top_n_branches.index.tolist()
-    print(branches_to_check)
+    top_n_branches = back_period_metrics.loc[branches_to_check]
+    # print(top_n_branches.head())
     
     # Calculate average metrics for the forward period
     forward_period_metrics = forward_returns[branches_to_check].apply(lambda col: pd.Series({
@@ -155,18 +173,27 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
         'calmar': np.mean([x[2] for x in col])
     }))
     
+    forward_period_metrics = forward_period_metrics.T
+    
+    # print(forward_period_metrics.head())
+    
+    # prefix both dataframes column names
+    top_n_branches.columns = [f'back_{col}' for col in top_n_branches.columns]
+    forward_period_metrics.columns = [f'forward_{col}' for col in forward_period_metrics.columns]
+    
     # Combine the back period and forward period metrics
     dataset: pd.DataFrame = pd.concat([top_n_branches, forward_period_metrics], axis=1)
-    dataset.columns = ['back_cagr', 'back_days_in_market', 'back_calmar', 
-                       'forward_cagr', 'forward_days_in_market', 'forward_calmar']
+    # print(dataset.head())
+    # dataset.columns = ['back_cagr', 'back_days_in_market', 'back_calmar', 
+    #                    'forward_cagr', 'forward_days_in_market', 'forward_calmar']
     
     # Add a row for the averages
     dataset.loc['avg'] = dataset.mean()
     
     # Calculate the portion of year for back and forward periods
-    dataset.loc['portion_of_year'] = [(back_end - back_start).days / 365, (forward_end - forward_start).days / 365]
+    # dataset.loc['portion_of_year'] = [(back_end - back_start).days / 365, (forward_end - forward_start).days / 365]
     
-    print(dataset)
+    # print(dataset)
     
     return dataset
 
@@ -186,18 +213,33 @@ if __name__ == "__main__":
     monthly_returns_df: pd.DataFrame = gather_monthly_returns('./monthly_returns_2')
     monthly_returns_df.index = pd.to_datetime(monthly_returns_df.index)
     
-    print(monthly_returns_df.head())
+    # print(monthly_returns_df.head())
     
     
     # replace all nans and infs with appropriate values
-    monthly_returns_df = monthly_returns_df.applymap(lambda x: (1, 0, 0) if pd.isna(x) or np.isinf(x[0]) else x)
+    def clean_func(data) -> list[float]:
+        # replace any nan or inf values appropriately
+        if data is None:
+            return [0, 0, 0]
+        
+        if type(data) != np.ndarray: # eliminate NaN
+            return [0, 0, 0]
+        
+        new_data = [0, 0, 0]
+        
+        for i, elem in enumerate(data):
+            # if the is not nan or inf replace it with the value
+            if np.isfinite(elem):
+                new_data[i] = elem
+        return new_data
+    monthly_returns_df = monthly_returns_df.applymap(clean_func)
     
     back_start: str = "2010-02"
-    back_end: str = "2018-12"
-    forward_start: str = "2019-01"
-    forward_end: str = "2024-06"
+    back_end: str = "2015-12"
+    forward_start: str = "2015-01"
+    forward_end: str = "2018-06"
     top_n: int = 5000
-    min_cagr: float = 0.05  # 5% minimum CAGR
+    min_cagr: float = 5  # 5% minimum CAGR
     min_days_in_market: float = 0.3  # 30% minimum days in market ratio
 
     dataset: pd.DataFrame = one_back_one_forward(monthly_returns_df, back_start, back_end, forward_start, forward_end, top_n, min_cagr, min_days_in_market)
