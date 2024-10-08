@@ -48,6 +48,7 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
         return series.replace([np.inf, -np.inf], np.nan).dropna()
 
     def cagr(series: pd.Series) -> float:
+        series = clean_series(series)
         if len(series) == 0:
             return 0
         percent_return = (series.prod() - 1) # as decimal
@@ -60,16 +61,21 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
         return (series != 1).sum() / len(series)
     
     def calmar(series: pd.Series) -> float:
+        series = clean_series(series)
         if len(series) == 0:
             return 0
         
         percent_return = (series.prod() - 1) # as decimal
-        cagr_val = (percent_return ** (365 / len(series))) - 1
+        cagr_val = (((1+percent_return) ** (365 / len(series))) - 1) * 100
         max_drawdown = max([1 - min(series.cumprod()), 0.000001])        
         return cagr_val / max_drawdown if max_drawdown != 0 else 0
     
+    def gross_return(series: pd.Series) -> float:
+        series = clean_series(series)
+        return series.prod()
+    
     def tuple_data(series: pd.Series) -> tuple[float, float, float]:
-        return (cagr(series), days_in_market_ratio(series), calmar(series))
+        return (cagr(series), days_in_market_ratio(series), calmar(series), gross_return(series))
     
     df['year'] = df.index.year
     df['month'] = df.index.month
@@ -146,7 +152,8 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     back_period_metrics = back_returns.apply(lambda col: pd.Series({
         'cagr': np.mean([x[0] for x in col]),
         'days_in_market': np.mean([x[1] for x in col]),
-        'calmar': np.mean([x[2] for x in col])
+        'calmar': np.mean([x[2] for x in col]),
+        'gross_return_percent': (np.prod([x[3] for x in col if x[3] != 0]) - 1) * 100
     }))
     
     # make the columns the keys and the values the series by transposing the dataframe
@@ -170,7 +177,8 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     forward_period_metrics = forward_returns[branches_to_check].apply(lambda col: pd.Series({
         'cagr': np.mean([x[0] for x in col]),
         'days_in_market': np.mean([x[1] for x in col]),
-        'calmar': np.mean([x[2] for x in col])
+        'calmar': np.mean([x[2] for x in col]),
+        'gross_return_percent': (np.prod([x[3] for x in col if x[3] != 0]) - 1) * 100
     }))
     
     forward_period_metrics = forward_period_metrics.T
@@ -198,19 +206,19 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     return dataset
 
 if __name__ == "__main__":
-    # os.makedirs('./monthly_returns_2', exist_ok=True)
+    # os.makedirs('./monthly_returns_3', exist_ok=True)
     
-    # branches: list[str] = []
-    # with open('branches.txt', 'r') as file:
-    #     branches = [line.strip() for line in file]
+    branches: list[str] = []
+    with open('branches.txt', 'r') as file:
+        branches = [line.strip() for line in file]
         
-    # batch_size: int = 100
-    # for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
-    #     batch: list[str] = branches[i:i+batch_size]
-    #     monthly_returns_df: pd.DataFrame = batch_processor(batch)
-    #     monthly_returns_df.to_parquet(f'./monthly_returns_2/monthly_returns_{i//batch_size}.parquet')
+    batch_size: int = 100
+    for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
+        batch: list[str] = branches[i:i+batch_size]
+        monthly_returns_df: pd.DataFrame = batch_processor(batch)
+        monthly_returns_df.to_parquet(f'./monthly_returns_3/monthly_returns_{i//batch_size}.parquet')
         
-    monthly_returns_df: pd.DataFrame = gather_monthly_returns('./monthly_returns_2')
+    monthly_returns_df: pd.DataFrame = gather_monthly_returns('./monthly_returns_3')
     monthly_returns_df.index = pd.to_datetime(monthly_returns_df.index)
     
     # print(monthly_returns_df.head())
@@ -220,12 +228,12 @@ if __name__ == "__main__":
     def clean_func(data) -> list[float]:
         # replace any nan or inf values appropriately
         if data is None:
-            return [0, 0, 0]
+            return [0, 0, 0, 1]
         
         if type(data) != np.ndarray: # eliminate NaN
-            return [0, 0, 0]
+            return [0, 0, 0, 1]
         
-        new_data = [0, 0, 0]
+        new_data = [0, 0, 0, 1]
         
         for i, elem in enumerate(data):
             # if the is not nan or inf replace it with the value

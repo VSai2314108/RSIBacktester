@@ -68,7 +68,7 @@ def update_data(etfs: list[str], data_folder: str):
             df = df.iloc[::-1]    
             df.set_index("date", inplace=True)        
             # Write to a file with no header in the order date, open, high, low, close, volume
-            csv_file_path = os.path.join(data_folder, f"{symbol}.csv")
+            csv_file_path = os.path.join(data_folder, f"{symbol.upper()}.csv")
             print(csv_file_path)
             df.to_csv(csv_file_path)
     
