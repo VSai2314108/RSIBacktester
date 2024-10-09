@@ -41,6 +41,9 @@ def evaluate_branch(branch: str) -> pd.DataFrame:
     result['shifted_condition'] = result['condition_met'].shift(1)
     result['trade_returns_day'] = (result['shifted_condition'] * trading_df['close'].pct_change()) + 1
     
+    os.makedirs('./trade_returns_day', exist_ok=True)
+    result[['trade_returns_day']].to_csv(f'./trade_returns_day/{branch}.csv')
+    
     return result[['trade_returns_day']]
 
 def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
