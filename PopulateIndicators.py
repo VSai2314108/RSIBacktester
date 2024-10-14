@@ -1,18 +1,17 @@
 import pandas as pd
+import numpy as np
 import os
+import ta  # Make sure to import the ta library
 
 def calculate_rsi_vectorized(data: pd.Series, periods):
-    delta = data.diff()
-    gains = delta.where(delta > 0, 0)
-    losses = -delta.where(delta < 0, 0)
+    def calculate_rsi(period):
+        rsi_series = ta.momentum.RSIIndicator(data, window=period).rsi()
+        rsi_series[:period-1] = np.nan  # Set RSI values to NaN if there's not enough data
+        rsi_series = rsi_series.round(1)  # Round to the nearest tenth
+        return rsi_series
     
-    avg_gains = [gains.rolling(window=period).mean() for period in periods]
-    avg_losses = [losses.rolling(window=period).mean() for period in periods]
-    
-    rs_values = [avg_gain / avg_loss for avg_gain, avg_loss in zip(avg_gains, avg_losses)]
-    rsi_values = [100 - (100 / (1 + rs)) for rs in rs_values]
-    
-    return pd.DataFrame({f'rsi_{period}': rsi for period, rsi in zip(periods, rsi_values)})
+    rsi_dict = {f'rsi_{period}': calculate_rsi(period) for period in periods}
+    return pd.DataFrame(rsi_dict)
 
 def process_file(file_path):
     df = pd.read_csv(file_path)

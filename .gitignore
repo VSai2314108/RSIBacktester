@@ -9,3 +9,8 @@ RSI
 .DS_Store
 *.cpython*
 *.parquet
+.cs
+monthly_returns
+old
+old_logs
+temp

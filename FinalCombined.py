@@ -5,6 +5,7 @@ import multiprocessing
 from functools import partial
 from typing import Union
 import numpy as np
+import time
 
 
 def load_data(ticker: str) -> pd.DataFrame:
@@ -48,14 +49,14 @@ def evaluate_branch(branch: str) -> pd.DataFrame:
 
 def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
     def clean_series(series: pd.Series) -> pd.Series:
-        return series.replace([np.inf, -np.inf], np.nan).dropna()
+        return series.replace([np.inf, -np.inf], 1.0)
 
-    def cagr(series: pd.Series) -> float:
-        series = clean_series(series)
+    def projected_cagr(series: pd.Series) -> float:
         if len(series) == 0:
             return 0
-        percent_return = (series.prod() - 1) # as decimal
-        cagr = (((1+percent_return) ** (365 / len(series))) - 1) * 100 # as percent
+        total_return = series.prod() - 1  # as decimal
+        years = len(series) / 252  # Assuming 252 trading days in a year
+        cagr = ((1 + total_return) ** (1 / years) - 1) * 100  # as percent
         return cagr
     
     def days_in_market_ratio(series: pd.Series) -> float:
@@ -64,21 +65,25 @@ def compute_monthly_returns(branch: str, df: pd.DataFrame) -> pd.DataFrame:
         return (series != 1).sum() / len(series)
     
     def calmar(series: pd.Series) -> float:
-        series = clean_series(series)
         if len(series) == 0:
             return 0
         
-        percent_return = (series.prod() - 1) # as decimal
-        cagr_val = (((1+percent_return) ** (365 / len(series))) - 1) * 100
-        max_drawdown = max([1 - min(series.cumprod()), 0.000001])        
-        return cagr_val / max_drawdown if max_drawdown != 0 else 0
+        cumulative_returns = series.cumprod()
+        running_max = cumulative_returns.cummax()
+        drawdown = (cumulative_returns - running_max) / running_max
+        max_drawdown = abs(drawdown.min())
+        
+        if max_drawdown == 0:
+            return float('inf')  # or another large number to represent undefined ratio
+        
+        return projected_cagr(series) / max_drawdown
     
     def gross_return(series: pd.Series) -> float:
-        series = clean_series(series)
         return series.prod()
     
     def tuple_data(series: pd.Series) -> tuple[float, float, float]:
-        return (cagr(series), days_in_market_ratio(series), calmar(series), gross_return(series))
+        series = clean_series(series)
+        return (projected_cagr(series), days_in_market_ratio(series), calmar(series), gross_return(series))
     
     df['year'] = df.index.year
     df['month'] = df.index.month
@@ -113,22 +118,44 @@ def batch_processor(branches: list[str]) -> pd.DataFrame:
     
     return pd.concat(monthly_returns_dfs, axis=1)
 
-def gather_monthly_returns(directory: str) -> pd.DataFrame:
-    dataframes = []
-    files = [f for f in os.listdir(directory) if f.endswith('.parquet')][:100]
-    for file in tqdm(files, desc="Processing files", unit="file"):
-        df = pd.read_parquet(os.path.join(directory, file))
-        dataframes.append(df)
-    monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')  # Use join='inner' to keep only common indices
+# def gather_monthly_returns(directory: str) -> pd.DataFrame:
+#     dataframes = []
+#     files = [f for f in os.listdir(directory) if f.endswith('.parquet')][:100]
+#     for file in tqdm(files, desc="Processing files", unit="file"):
+#         df = pd.read_parquet(os.path.join(directory, file))
+#         dataframes.append(df)
+#     monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')  # Use join='inner' to keep only common indices
     
-    # print the data for this column specifically - rsi-3-SPXL->-23-1-ERY
-    print(monthly_returns_df['rsi-3-SPXL->-23-1-ERY'])
-    
-    # write it to a temp file
-    monthly_returns_df['rsi-3-SPXL->-23-1-ERY'].to_csv(f'./temp/tmp.csv')
-    
-    return monthly_returns_df
+#     return monthly_returns_df
 
+import os
+import pandas as pd
+from tqdm import tqdm
+import pyarrow.parquet as pq
+
+def gather_monthly_returns(directory: str) -> pd.DataFrame:
+    files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
+    
+    # Read and process files in chunks
+    chunk_size = 10
+    dataframes = []
+    
+    for i in tqdm(range(0, len(files), chunk_size), desc="Processing chunks", unit="chunk"):
+        chunk_files = files[i:i+chunk_size]
+        chunk_dfs = []
+        
+        for file in chunk_files:
+            file_path = os.path.join(directory, file)
+            # Use pyarrow to read only necessary columns
+            table = pq.read_table(file_path)
+            df = table.to_pandas()
+            chunk_dfs.append(df)
+        
+        chunk_df = pd.concat(chunk_dfs, axis=1, join='inner')
+        dataframes.append(chunk_df)
+    
+    monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')
+    return monthly_returns_df
 
 def one_back_one_forward(monthly_returns_df: pd.DataFrame, 
                          back_start: Union[str, pd.Timestamp], 
@@ -151,13 +178,20 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     back_returns: pd.DataFrame = monthly_returns_df.loc[back_start:back_end]
     forward_returns: pd.DataFrame = monthly_returns_df.loc[forward_start:forward_end]
     
-    # Calculate average metrics for the back period
+    # set all values of all 
+    
+    # Calculate average metrics for the back period 
+    
+    print("Calculating back period metrics")
+    st_time = time.time()
     back_period_metrics = back_returns.apply(lambda col: pd.Series({
-        'cagr': np.mean([x[0] for x in col]),
+        'cagr': ((np.prod([x[3] for x in col]) - 1) * 100)/ (len(col) / 12),
         'days_in_market': np.mean([x[1] for x in col]),
         'calmar': np.mean([x[2] for x in col]),
-        'gross_return_percent': (np.prod([x[3] for x in col if x[3] != 0]) - 1) * 100
+        'gross_return_percent': (np.prod([x[3] for x in col]) - 1) * 100
     }))
+    
+    print(f"Time taken: {time.time() - st_time}")
     
     # make the columns the keys and the values the series by transposing the dataframe
     back_period_metrics = back_period_metrics.T
@@ -165,26 +199,31 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     # print(back_period_metrics.head())
     
     # Filter branches based on minimum CAGR and days in market ratio
+    print("Filtering branches based on minimum CAGR and days in market ratio")
     filtered_branches = back_period_metrics[
         (back_period_metrics['cagr'] >= min_cagr) & 
         (back_period_metrics['days_in_market'] >= min_days_in_market)
     ]
     
-    branches_to_check: list[str] = filtered_branches.nlargest(top_n, 'calmar').index.tolist()
+    branches_to_check: list[str] = filtered_branches.nlargest(top_n, 'cagr').index.tolist()
     # print(branches_to_check)
     
     top_n_branches = back_period_metrics.loc[branches_to_check]
     # print(top_n_branches.head())
     
+    print("Calculating forward period metrics")
     # Calculate average metrics for the forward period
+    st_time = time.time()
     forward_period_metrics = forward_returns[branches_to_check].apply(lambda col: pd.Series({
-        'cagr': np.mean([x[0] for x in col]),
+        'cagr': ((np.prod([x[3] for x in col]) - 1) * 100) / (len(col) / 12),
         'days_in_market': np.mean([x[1] for x in col]),
         'calmar': np.mean([x[2] for x in col]),
-        'gross_return_percent': (np.prod([x[3] for x in col if x[3] != 0]) - 1) * 100
+        'gross_return_percent': (np.prod([x[3] for x in col]) - 1) * 100
     }))
     
     forward_period_metrics = forward_period_metrics.T
+    
+    print(f"Time taken: {time.time() - st_time}")
     
     # print(forward_period_metrics.head())
     
@@ -211,18 +250,21 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
 if __name__ == "__main__":
     # os.makedirs('./monthly_returns_3', exist_ok=True)
     
-    branches: list[str] = []
-    with open('branches.txt', 'r') as file:
-        branches = [line.strip() for line in file]
+    # branches: list[str] = []
+    # with open('branches.txt', 'r') as file:
+    #     branches = [line.strip() for line in file]
         
-    batch_size: int = 100
-    for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
-        batch: list[str] = branches[i:i+batch_size]
-        monthly_returns_df: pd.DataFrame = batch_processor(batch)
-        monthly_returns_df.to_parquet(f'./monthly_returns_3/monthly_returns_{i//batch_size}.parquet')
+    # batch_size: int = 100
+    # for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
+    #     batch: list[str] = branches[i:i+batch_size]
+    #     monthly_returns_df: pd.DataFrame = batch_processor(batch)
+    #     monthly_returns_df.to_parquet(f'./monthly_returns_3/monthly_returns_{i//batch_size}.parquet')
         
     monthly_returns_df: pd.DataFrame = gather_monthly_returns('./monthly_returns_3')
     monthly_returns_df.index = pd.to_datetime(monthly_returns_df.index)
+    
+    # duplicate each row 10 times to test the code at 1mil branches
+    monthly_returns_df = monthly_returns_df.loc[monthly_returns_df.index.repeat(10)]
     
     # print(monthly_returns_df.head())
     
@@ -243,7 +285,7 @@ if __name__ == "__main__":
             if np.isfinite(elem):
                 new_data[i] = elem
         return new_data
-    monthly_returns_df = monthly_returns_df.applymap(clean_func)
+    # monthly_returns_df = monthly_returns_df.applymap(clean_func)
     
     back_start: str = "2010-02"
     back_end: str = "2015-12"

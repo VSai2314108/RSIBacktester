@@ -19,7 +19,12 @@ def update_data(etfs: list[str], data_folder: str):
             data = response.json()["historical"]
         except Exception as _:
             return
-        return pd.DataFrame(data)
+        
+        df = pd.DataFrame(data)
+        
+        # Convert date to YYYY-MM-DD and subtract one day
+        df["date"] = pd.to_datetime(df["date"]) - pd.DateOffset(days=1)
+        return df
 
     last_updated_path = os.path.join(data_folder, "last_updated.csv")
     if not os.path.exists(last_updated_path):
@@ -55,14 +60,15 @@ def update_data(etfs: list[str], data_folder: str):
                 continue
 
             # Select date, open, high, low, close, volume
-            df = df[["date", "open", "high", "low", "close", "volume"]]
+            df = df[["date", "open", "high", "low", "adjClose", "volume"]]
+            df.rename(columns={"adjClose": "close"}, inplace=True)
             # Convert date form YYYY-MM-DD to YYYYMMDD HH:MM where HH:MM is 16:00
             df["date"] = (pd.to_datetime(df["date"]) + pd.DateOffset(days=1)).dt.strftime("%Y%m%d 00:00")
             # Convert to decicents
             # df["open"] = (df["open"]).astype(int)
             # df["high"] = (df["high"]).astype(int)
             # df["low"] = (df["low"]).astype(int)
-            df["close"] = (df["close"]).astype(int)
+            # df["close"] = (df["close"]).astype(int)
             
             # reverse the order of the dataframe
             df = df.iloc[::-1]    
