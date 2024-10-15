@@ -118,44 +118,54 @@ def batch_processor(branches: list[str]) -> pd.DataFrame:
     
     return pd.concat(monthly_returns_dfs, axis=1)
 
-# def gather_monthly_returns(directory: str) -> pd.DataFrame:
-#     dataframes = []
-#     files = [f for f in os.listdir(directory) if f.endswith('.parquet')][:100]
-#     for file in tqdm(files, desc="Processing files", unit="file"):
-#         df = pd.read_parquet(os.path.join(directory, file))
-#         dataframes.append(df)
-#     monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')  # Use join='inner' to keep only common indices
+def gather_monthly_returns(directory: str) -> pd.DataFrame:
+    dataframes = []
+    files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
+    for file in tqdm(files, desc="Processing files", unit="file"):
+        df = pd.read_parquet(os.path.join(directory, file))
+        # do not append if df index is empty
+        if df.index.empty:
+            continue
+        
+        # do not append if df is empty
+        if df.empty:
+            continue
+        
+        dataframes.append(df)
+    # monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')  # Use join='inner' to keep only common indices
+    monthly_returns_df = pd.concat(dataframes, axis=1)  # using join inner fails as some indices have no data
+
     
-#     return monthly_returns_df
+    return monthly_returns_df
 
 import os
 import pandas as pd
 from tqdm import tqdm
 import pyarrow.parquet as pq
 
-def gather_monthly_returns(directory: str) -> pd.DataFrame:
-    files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
+# def gather_monthly_returns(directory: str) -> pd.DataFrame:
+#     files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
     
-    # Read and process files in chunks
-    chunk_size = 10
-    dataframes = []
+#     # Read and process files in chunks
+#     chunk_size = 10
+#     dataframes = []
     
-    for i in tqdm(range(0, len(files), chunk_size), desc="Processing chunks", unit="chunk"):
-        chunk_files = files[i:i+chunk_size]
-        chunk_dfs = []
+#     for i in tqdm(range(0, len(files), chunk_size), desc="Processing chunks", unit="chunk"):
+#         chunk_files = files[i:i+chunk_size]
+#         chunk_dfs = []
         
-        for file in chunk_files:
-            file_path = os.path.join(directory, file)
-            # Use pyarrow to read only necessary columns
-            table = pq.read_table(file_path)
-            df = table.to_pandas()
-            chunk_dfs.append(df)
+#         for file in chunk_files:
+#             file_path = os.path.join(directory, file)
+#             # Use pyarrow to read only necessary columns
+#             table = pq.read_table(file_path)
+#             df = table.to_pandas()
+#             chunk_dfs.append(df)
         
-        chunk_df = pd.concat(chunk_dfs, axis=1, join='inner')
-        dataframes.append(chunk_df)
+#         chunk_df = pd.concat(chunk_dfs, axis=1, join='inner')
+#         dataframes.append(chunk_df)
     
-    monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')
-    return monthly_returns_df
+#     monthly_returns_df = pd.concat(dataframes, axis=1, join='inner')
+#     return monthly_returns_df
 
 def one_back_one_forward(monthly_returns_df: pd.DataFrame, 
                          back_start: Union[str, pd.Timestamp], 
@@ -163,7 +173,7 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
                          forward_start: Union[str, pd.Timestamp], 
                          forward_end: Union[str, pd.Timestamp], 
                          top_n: int,
-                         min_cagr: float,
+                         min_calmar: float,
                          min_days_in_market: float) -> pd.DataFrame:
     # Convert string dates to datetime if necessary
     if isinstance(back_start, str):
@@ -178,7 +188,13 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     back_returns: pd.DataFrame = monthly_returns_df.loc[back_start:back_end]
     forward_returns: pd.DataFrame = monthly_returns_df.loc[forward_start:forward_end]
     
-    # set all values of all 
+    print(back_returns.head())
+    
+    # drop cols of length 0
+    back_returns = back_returns.loc[:, back_returns.notna().all()]
+    forward_returns = forward_returns.loc[:, forward_returns.notna().all()]
+    
+    print(back_returns.head())
     
     # Calculate average metrics for the back period 
     
@@ -187,7 +203,7 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     back_period_metrics = back_returns.apply(lambda col: pd.Series({
         'cagr': ((np.prod([x[3] for x in col]) - 1) * 100)/ (len(col) / 12),
         'days_in_market': np.mean([x[1] for x in col]),
-        'calmar': np.mean([x[2] for x in col]),
+        'calmar': (((np.prod([x[3] for x in col]) - 1) * 100)/ (len(col) / 12))/max((1 - min(np.cumprod([x[3] for x in col])))*100, 1),
         'gross_return_percent': (np.prod([x[3] for x in col]) - 1) * 100
     }))
     
@@ -196,12 +212,14 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     # make the columns the keys and the values the series by transposing the dataframe
     back_period_metrics = back_period_metrics.T
     
-    # print(back_period_metrics.head())
+    print(back_period_metrics.head())
+    
+    # fill in all nans 
     
     # Filter branches based on minimum CAGR and days in market ratio
     print("Filtering branches based on minimum CAGR and days in market ratio")
     filtered_branches = back_period_metrics[
-        (back_period_metrics['cagr'] >= min_cagr) & 
+        (back_period_metrics['cagr'] >= min_calmar) & 
         (back_period_metrics['days_in_market'] >= min_days_in_market)
     ]
     
@@ -215,9 +233,9 @@ def one_back_one_forward(monthly_returns_df: pd.DataFrame,
     # Calculate average metrics for the forward period
     st_time = time.time()
     forward_period_metrics = forward_returns[branches_to_check].apply(lambda col: pd.Series({
-        'cagr': ((np.prod([x[3] for x in col]) - 1) * 100) / (len(col) / 12),
+        'cagr': ((np.prod([x[3] for x in col]) - 1) * 100)/ (len(col) / 12),
         'days_in_market': np.mean([x[1] for x in col]),
-        'calmar': np.mean([x[2] for x in col]),
+        'calmar': (((np.prod([x[3] for x in col]) - 1) * 100)/ (len(col) / 12))/max((1 - min(np.cumprod([x[3] for x in col])))*100, 1),
         'gross_return_percent': (np.prod([x[3] for x in col]) - 1) * 100
     }))
     
@@ -254,7 +272,7 @@ if __name__ == "__main__":
     # with open('branches.txt', 'r') as file:
     #     branches = [line.strip() for line in file]
         
-    # batch_size: int = 100
+    # batch_size: int = 500
     # for i in tqdm(range(0, len(branches), batch_size), desc="Processing branches", leave=False):
     #     batch: list[str] = branches[i:i+batch_size]
     #     monthly_returns_df: pd.DataFrame = batch_processor(batch)
@@ -264,12 +282,13 @@ if __name__ == "__main__":
     monthly_returns_df.index = pd.to_datetime(monthly_returns_df.index)
     
     # duplicate each row 10 times to test the code at 1mil branches
-    monthly_returns_df = monthly_returns_df.loc[monthly_returns_df.index.repeat(10)]
+    # monthly_returns_df = monthly_returns_df.loc[monthly_returns_df.index.repeat(10)]
     
     # print(monthly_returns_df.head())
     
     
     # replace all nans and infs with appropriate values
+
     def clean_func(data) -> list[float]:
         # replace any nan or inf values appropriately
         if data is None:
@@ -285,17 +304,19 @@ if __name__ == "__main__":
             if np.isfinite(elem):
                 new_data[i] = elem
         return new_data
+    st_time = time.time()
     # monthly_returns_df = monthly_returns_df.applymap(clean_func)
+    print(f"Time taken to clean {len(monthly_returns_df)} rows: {time.time() - st_time}")
     
     back_start: str = "2010-02"
     back_end: str = "2015-12"
     forward_start: str = "2015-01"
     forward_end: str = "2018-06"
-    top_n: int = 5000
-    min_cagr: float = 5  # 5% minimum CAGR
-    min_days_in_market: float = 0.3  # 30% minimum days in market ratio
+    top_n: int = 25000
+    min_calmar: float = 1  # 5% minimum CAGR
+    min_days_in_market: float = 0.03  # 30% minimum days in market ratio
 
-    dataset: pd.DataFrame = one_back_one_forward(monthly_returns_df, back_start, back_end, forward_start, forward_end, top_n, min_cagr, min_days_in_market)
+    dataset: pd.DataFrame = one_back_one_forward(monthly_returns_df, back_start, back_end, forward_start, forward_end, top_n, min_calmar, min_days_in_market)
 
     # save the dataset to a csv file
-    dataset.to_csv(f'./dataset_{back_start}_{back_end}_{forward_start}_{forward_end}_{top_n}_min_cagr_{min_cagr}_min_dim_{min_days_in_market}.csv')
+    dataset.to_csv(f'./dataset_{back_start}_{back_end}_{forward_start}_{forward_end}_{top_n}_min_calmar_{min_calmar}_min_dim_{min_days_in_market}.csv')
